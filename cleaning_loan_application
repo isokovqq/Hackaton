@@ -1,0 +1,154 @@
+loan_details=pd.read_excel("C:/Users/ITPARK/Desktop/CBU Contest/loan_details.xlsx")
+
+loan_type_clean_map = {
+    'personal': 'Personal Loan',
+    'personal loan': 'Personal Loan',
+    'personal': 'Personal Loan',
+    'personal loan': 'Personal Loan',
+
+    'creditcard': 'Credit Card',
+    'credit card': 'Credit Card',
+    'cc': 'Credit Card',
+
+    'mortgage': 'Mortgage',
+    'home loan': 'Mortgage'
+}
+
+# Kichik harfga o'tkazib, bo'sh joylarni olib tashlaymiz
+loan_details['loan_type_cleaned'] = (
+    loan_details['loan_type']
+    .str.strip()
+    .str.lower()
+    .map(loan_type_clean_map)
+)
+
+loan_details['loan_amount_clean'] = (
+    loan_details['loan_amount']
+    .astype(str)
+    .str.replace('$', '', regex=False)
+    .str.replace(',', '', regex=False)
+    .astype(float)
+)
+
+loan_details['interest_rate'] = loan_details['interest_rate'].astype(float) / 100
+
+loan_details=loan_details.drop(columns={'loan_amount','loan_type'})
+
+
+loan_details.rename(columns={'loan_type_cleaned':'loan_type','loan_amount_clean':'loan_amount'})
+
+loan_mapping = {
+    'Debt Consolidation': 0,
+    'Refinance': 1,
+    'Major Purchase': 2,
+    'Medical': 3,
+    'Revolving Credit': 4,
+    'Home Improvement': 5,
+    'Home Purchase': 6,
+    'Other': 7
+}
+
+# loan_purpose ustunini label encoding qilish
+loan_details['loan_purpose_encoded'] = loan_details['loan_purpose'].map(loan_mapping)
+
+# natijani tekshirish
+print(loan_details[['loan_purpose', 'loan_purpose_encoded']])
+
+# origination_channel uchun label encoding
+channel_mapping = {
+    'Direct Mail': 0,
+    'Branch': 1,
+    'Online': 2,
+    'Broker': 3
+}
+
+# ustunni raqamga aylantirish
+loan_details['origination_channel_encoded'] = loan_details['origination_channel'].map(channel_mapping)
+
+# natijani tekshirish
+print(loan_details[['origination_channel', 'origination_channel_encoded']].head())
+
+
+# loan_type_cleaned uchun label encoding
+loan_type_mapping = {
+    'Personal Loan': 0,
+    'Mortgage': 1,
+    'Credit Card': 2
+}
+
+# ustunni raqamga aylantirish
+loan_details['loan_type_encoded'] = loan_details['loan_type_cleaned'].map(loan_type_mapping)
+
+# natijani tekshirish
+print(loan_details[['loan_type_cleaned', 'loan_type_encoded']].head())
+
+
+# kerakli ustunlarni tanlash
+columns_needed = [
+    'customer_id', 
+    'loan_term', 
+    'interest_rate', 
+    'loan_to_value_ratio', 
+    'loan_officer_id', 
+    'marketing_campaign', 
+    'loan_amount_clean', 
+    'loan_purpose_encoded', 
+    'origination_channel_encoded', 
+    'loan_type_encoded'
+]
+
+loan_final = loan_details[columns_needed].copy()
+
+# ustunlarni qayta nomlash
+loan_final.rename(columns={
+    'loan_amount_clean': 'loan_amount',
+    'loan_purpose_encoded': 'loan_purpose',
+    'origination_channel_encoded': 'origination_channel',
+    'loan_type_encoded': 'loan_type'
+}, inplace=True)
+
+# natijani tekshirish
+print(loan_final.head())
+
+
+loan_final.to_csv('ready_loan_details.csv')
+
+
+
+
+
+application_metadata=pd.read_csv("C:/Users/ITPARK/Downloads/Telegram Desktop/application_metadata.csv")
+
+# preferred_contact uchun label encoding
+contact_mapping = {
+    'Mail': 0,
+    'Email': 0,
+    'Phone': 1
+}
+
+# ustunni raqamga aylantirish
+application_metadata['preferred_contact_encoded'] = application_metadata['preferred_contact'].map(contact_mapping)
+
+# natijani tekshirish
+print(application_metadata[['preferred_contact', 'preferred_contact_encoded']].head())
+
+
+# account_status_code uchun label encoding
+account_status_mapping = {
+    'ACT-1': 0,
+    'ACT-2': 1,
+    'ACT-3': 2,
+    'A01': 3,
+    'ACTIVE': 4
+}
+
+# ustunni raqamga aylantirish
+application_metadata['account_status_encoded'] = application_metadata['account_status_code'].map(account_status_mapping)
+
+# natijani tekshirish
+print(application_metadata[['account_status_code', 'account_status_encoded']].head())
+
+application_metadata=application_metadata.drop(columns={'preferred_contact','account_status_code'})
+application_metadata=application_metadata.rename(columns={'customer_ref':'customer_id'})
+
+application_metadata.to_csv('cleaned.1_application_meta.csv')
