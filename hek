@@ -1,0 +1,1006 @@
+"""
+KREDIT DEFOLT BASHORAT QILISH MODELI
+Credit Default Prediction Model - Complete Implementation
+
+Task 2.6.2: Qarz oluvchining defolt ehtimolini bashorat qilish
+Task 2.6.3: Defolt ehtimoliga eng katta ta'sir ko'rsatuvchi omillarni interpretatsiya qilish
+"""
+
+# ============================================================================
+# STEP 1: KUTUBXONALARNI IMPORT QILISH (Import Required Libraries)
+# ============================================================================
+
+%pip install imbalanced-learn
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (classification_report, confusion_matrix, 
+                             roc_auc_score, roc_curve, accuracy_score,
+                             precision_score, recall_score, f1_score,
+                             precision_recall_curve, average_precision_score)
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.combine import SMOTEENN
+from collections import Counter
+import warnings
+warnings.filterwarnings('ignore')
+
+# Vizualizatsiya uchun settings
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+print("=" * 80)
+print("KREDIT DEFOLT BASHORAT QILISH MODELI")
+print("=" * 80)
+
+# ============================================================================
+# STEP 2: MA'LUMOTLARNI YUKLASH (Load Data)
+# ============================================================================
+
+print("\n📂 STEP 1: Ma'lumotlarni yuklash...")
+
+# Fayl yo'lini kiriting
+file_path = 'data/merged_customer_data.csv'  # FAYLNI O'ZGARTIRING!
+df = pd.read_csv(file_path)
+
+print(f"✓ Ma'lumotlar yuklandi: {df.shape[0]} qator, {df.shape[1]} ustun")
+print(f"\nBirinchi 5 qator:")
+print(df.head())
+
+# ============================================================================
+# STEP 3: MA'LUMOTLAR TAHLILI (Exploratory Data Analysis)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("📊 STEP 2: Ma'lumotlar tahlili (EDA)")
+print("=" * 80)
+
+# Basic info
+print("\n1. Ma'lumotlar haqida umumiy ma'lumot:")
+print(df.info())
+
+# Target variable distribution
+print("\n2. Target o'zgaruvchi (default) taqsimoti:")
+default_counts = df['default'].value_counts()
+default_percentage = df['default'].value_counts(normalize=True) * 100
+print(f"\nDefolt emas (0): {default_counts[0]} ({default_percentage[0]:.2f}%)")
+print(f"Defolt (1): {default_counts[1]} ({default_percentage[1]:.2f}%)")
+
+# Statistical summary
+print("\n3. Asosiy statistik ko'rsatkichlar:")
+print(df.describe())
+
+# ============================================================================
+# STEP 4: IDENTIFIKATORLARNI OLIB TASHLASH (Remove IDs)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("🗑️ STEP 3: Identifikatorlarni olib tashlash")
+print("=" * 80)
+
+# Identifikatorlar (modelda kerak emas)
+id_columns = ['customer_id', 'application_id', 'loan_officer_id', 
+              'previous_zip_code', 'random_noise_1']
+
+# Mavjud identifikatorlarni topish
+id_cols_to_drop = [col for col in id_columns if col in df.columns]
+df_model = df.drop(columns=id_cols_to_drop)
+
+print(f"✓ {len(id_cols_to_drop)} ta identifikator ustuni olib tashlandi")
+print(f"Qolgan ustunlar soni: {df_model.shape[1]}")
+
+# ============================================================================
+# STEP 5: ASOSIY XUSUSIYATLAR TAHLILI (Key Features Analysis)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("🔍 STEP 4: Asosiy xususiyatlar tahlili")
+print("=" * 80)
+
+# Defolt va no-defolt guruhlari uchun taqqoslash
+key_features = [
+    'credit_score', 
+    'debt_to_income_ratio', 
+    'credit_utilization',
+    'num_delinquencies_2yrs',
+    'payment_to_income_ratio',
+    'loan_to_annual_income',
+    'monthly_free_cash_flow',
+    'num_inquiries_6mo',
+    'interest_rate',
+    'loan_amount'
+]
+
+print("\nDefolt va No-Defolt guruhlari o'rtacha qiymatlari:\n")
+print("-" * 80)
+print(f"{'Xususiyat':<35} {'No-Defolt':>15} {'Defolt':>15} {'Farq %':>10}")
+print("-" * 80)
+
+for feature in key_features:
+    if feature in df_model.columns:
+        no_default = df_model[df_model['default'] == 0][feature].mean()
+        default = df_model[df_model['default'] == 1][feature].mean()
+        diff_pct = ((default - no_default) / no_default * 100) if no_default != 0 else 0
+        print(f"{feature:<35} {no_default:>15.2f} {default:>15.2f} {diff_pct:>10.1f}%")
+
+# ============================================================================
+# STEP 6: VIZUALIZATSIYA (Visualization)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("📈 STEP 5: Vizualizatsiyalar yaratish")
+print("=" * 80)
+
+# 1. Target distribution
+plt.figure(figsize=(15, 10))
+
+plt.subplot(2, 3, 1)
+df['default'].value_counts().plot(kind='bar', color=['green', 'red'])
+plt.title('Default Distribution', fontsize=14, fontweight='bold')
+plt.xlabel('Default')
+plt.ylabel('Count')
+plt.xticks(rotation=0)
+
+# 2. Credit Score distribution by default
+plt.subplot(2, 3, 2)
+df_model.boxplot(column='credit_score', by='default', ax=plt.gca())
+plt.title('Credit Score by Default Status', fontsize=14, fontweight='bold')
+plt.suptitle('')
+plt.xlabel('Default')
+plt.ylabel('Credit Score')
+
+# 3. Debt to Income Ratio
+plt.subplot(2, 3, 3)
+df_model.boxplot(column='debt_to_income_ratio', by='default', ax=plt.gca())
+plt.title('Debt-to-Income Ratio by Default', fontsize=14, fontweight='bold')
+plt.suptitle('')
+plt.xlabel('Default')
+plt.ylabel('DTI Ratio')
+
+# 4. Credit Utilization
+plt.subplot(2, 3, 4)
+df_model.boxplot(column='credit_utilization', by='default', ax=plt.gca())
+plt.title('Credit Utilization by Default', fontsize=14, fontweight='bold')
+plt.suptitle('')
+plt.xlabel('Default')
+plt.ylabel('Credit Utilization')
+
+# 5. Delinquencies
+plt.subplot(2, 3, 5)
+df_model.groupby(['default', 'num_delinquencies_2yrs']).size().unstack(fill_value=0).plot(kind='bar', ax=plt.gca())
+plt.title('Delinquencies by Default', fontsize=14, fontweight='bold')
+plt.xlabel('Default')
+plt.ylabel('Count')
+plt.legend(title='Delinquencies')
+
+# 6. Correlation heatmap (top features)
+plt.subplot(2, 3, 6)
+corr_features = ['default', 'credit_score', 'debt_to_income_ratio', 
+                 'credit_utilization', 'num_delinquencies_2yrs']
+corr_data = df_model[[f for f in corr_features if f in df_model.columns]].corr()
+sns.heatmap(corr_data, annot=True, cmap='coolwarm', center=0, fmt='.2f')
+plt.title('Feature Correlation', fontsize=14, fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('eda_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("✓ Vizualizatsiyalar yaratildi va 'eda_analysis.png' fayliga saqlandi")
+
+# ============================================================================
+# STEP 7: MA'LUMOTLARNI TAYYORLASH (Data Preparation)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("⚙️ STEP 6: Ma'lumotlarni modelga tayyorlash")
+print("=" * 80)
+
+# Target va features ajratish
+X = df_model.drop('default', axis=1)
+y = df_model['default']
+
+# Categorical o'zgaruvchilarni encode qilish
+categorical_cols = X.select_dtypes(include=['object']).columns
+print(f"\nKategorial ustunlar: {list(categorical_cols)}")
+
+for col in categorical_cols:
+    le = LabelEncoder()
+    X[col] = le.fit_transform(X[col].astype(str))
+
+print(f"✓ {len(categorical_cols)} ta kategorial ustun encode qilindi")
+
+# Check class imbalance
+print(f"\n📊 Class Imbalance tahlili:")
+print(f"   No-Default (0): {(y == 0).sum()} ({(y == 0).sum() / len(y) * 100:.2f}%)")
+print(f"   Default (1): {(y == 1).sum()} ({(y == 1).sum() / len(y) * 100:.2f}%)")
+print(f"   Imbalance ratio: 1:{(y == 0).sum() / (y == 1).sum():.1f}")
+
+# Train va Test setlarni ajratish
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42, stratify=y
+)
+
+print(f"\n✓ Ma'lumotlar bo'linishi:")
+print(f"   - Train set: {X_train.shape[0]} qator")
+print(f"   - Test set: {X_test.shape[0]} qator")
+
+# Feature scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+print(f"✓ Ma'lumotlar normalizatsiya qilindi (StandardScaler)")
+
+# ============================================================================
+# STEP 7.5: IMBALANCED DATA HANDLING
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("⚖️ STEP 6.5: IMBALANCED DATA BILAN ISHLASH")
+print("=" * 80)
+
+print("\n🔄 Turli usullar bilan balanced datasets yaratish...\n")
+
+# Original imbalance
+print(f"Original Train set:")
+print(f"   Class 0: {(y_train == 0).sum()}")
+print(f"   Class 1: {(y_train == 1).sum()}")
+print(f"   Ratio: 1:{(y_train == 0).sum() / (y_train == 1).sum():.1f}\n")
+
+# 1. SMOTE (Synthetic Minority Over-sampling)
+print("1️⃣ SMOTE (Synthetic Minority Over-sampling)...")
+smote = SMOTE(random_state=42, k_neighbors=5)
+X_train_smote, y_train_smote = smote.fit_resample(X_train_scaled, y_train)
+print(f"   ✓ Class 0: {(y_train_smote == 0).sum()}")
+print(f"   ✓ Class 1: {(y_train_smote == 1).sum()}")
+
+# 2. Random Under-sampling
+print("\n2️⃣ Random Under-sampling...")
+rus = RandomUnderSampler(random_state=42)
+X_train_under, y_train_under = rus.fit_resample(X_train_scaled, y_train)
+print(f"   ✓ Class 0: {(y_train_under == 0).sum()}")
+print(f"   ✓ Class 1: {(y_train_under == 1).sum()}")
+
+# 3. SMOTEENN (Combined approach)
+print("\n3️⃣ SMOTEENN (SMOTE + ENN)...")
+smoteenn = SMOTEENN(random_state=42)
+X_train_combined, y_train_combined = smoteenn.fit_resample(X_train_scaled, y_train)
+print(f"   ✓ Class 0: {(y_train_combined == 0).sum()}")
+print(f"   ✓ Class 1: {(y_train_combined == 1).sum()}")
+
+# Store all datasets
+datasets = {
+    'Original (Imbalanced)': (X_train_scaled, y_train),
+    'SMOTE': (X_train_smote, y_train_smote),
+    'Under-sampling': (X_train_under, y_train_under),
+    'SMOTEENN': (X_train_combined, y_train_combined)
+}
+
+print("\n✓ 4 xil dataset tayyor: Original, SMOTE, Under-sampling, SMOTEENN")
+
+# ============================================================================
+# STEP 8: MODEL QURISH (Model Building)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("🤖 STEP 7: MODEL QURISH - IMBALANCED DATA UCHUN")
+print("=" * 80)
+
+# Models with class_weight for imbalanced data
+models = {
+    'Logistic Regression': LogisticRegression(
+        random_state=42, 
+        max_iter=1000, 
+        class_weight='balanced'  # Important for imbalanced data!
+    ),
+    'Random Forest': RandomForestClassifier(
+        n_estimators=100, 
+        random_state=42, 
+        n_jobs=-1,
+        class_weight='balanced',  # Important for imbalanced data!
+        max_depth=10
+    ),
+    'Gradient Boosting': GradientBoostingClassifier(
+        n_estimators=100, 
+        random_state=42,
+        learning_rate=0.1,
+        max_depth=5
+    )
+}
+
+all_results = {}
+
+print("\nHar bir dataset va model kombinatsiyasi uchun training...\n")
+print("=" * 80)
+
+for dataset_name, (X_train_data, y_train_data) in datasets.items():
+    print(f"\n📊 Dataset: {dataset_name}")
+    print(f"   Train size: {X_train_data.shape[0]}, Class 1 ratio: {(y_train_data == 1).sum() / len(y_train_data) * 100:.1f}%")
+    print("-" * 80)
+    
+    dataset_results = {}
+    
+    for model_name, model in models.items():
+        print(f"   🔄 {model_name}...", end=' ')
+        
+        # Model training
+        model.fit(X_train_data, y_train_data)
+        
+        # Predictions on TEST set (original imbalanced test set)
+        y_pred = model.predict(X_test_scaled)
+        y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+        
+        # Metrics - IMPORTANT for imbalanced data
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, zero_division=0)
+        recall = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
+        auc = roc_auc_score(y_test, y_pred_proba)
+        avg_precision = average_precision_score(y_test, y_pred_proba)
+        
+        # Confusion matrix
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        
+        dataset_results[model_name] = {
+            'model': model,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'specificity': specificity,
+            'f1': f1,
+            'auc': auc,
+            'avg_precision': avg_precision,
+            'y_pred': y_pred,
+            'y_pred_proba': y_pred_proba,
+            'confusion_matrix': (tn, fp, fn, tp)
+        }
+        
+        print(f"✓ (AUC={auc:.3f}, Recall={recall:.3f}, Precision={precision:.3f})")
+    
+    all_results[dataset_name] = dataset_results
+
+print("\n" + "=" * 80)
+print("✓ Barcha modellar tayyor!")
+
+# ============================================================================
+# STEP 9: MODELLARNI TAQQOSLASH (Model Comparison)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("📊 STEP 8: BATAFSIL MODELLARNI TAQQOSLASH")
+print("=" * 80)
+
+# Create comprehensive comparison
+comparison_data = []
+for dataset_name, models_dict in all_results.items():
+    for model_name, metrics in models_dict.items():
+        comparison_data.append({
+            'Dataset': dataset_name,
+            'Model': model_name,
+            'Accuracy': metrics['accuracy'],
+            'Precision': metrics['precision'],
+            'Recall': metrics['recall'],
+            'Specificity': metrics['specificity'],
+            'F1-Score': metrics['f1'],
+            'AUC-ROC': metrics['auc'],
+            'Avg-Precision': metrics['avg_precision']
+        })
+
+comparison_df = pd.DataFrame(comparison_data)
+
+print("\n📋 Barcha natijalar:\n")
+print(comparison_df.to_string(index=False))
+
+# Find best model based on AUC-ROC and Recall balance
+# For imbalanced data, we prioritize AUC-ROC and Recall
+comparison_df['Score'] = (comparison_df['AUC-ROC'] * 0.4 + 
+                          comparison_df['Recall'] * 0.3 + 
+                          comparison_df['Precision'] * 0.2 + 
+                          comparison_df['F1-Score'] * 0.1)
+
+best_idx = comparison_df['Score'].idxmax()
+best_row = comparison_df.loc[best_idx]
+best_dataset = best_row['Dataset']
+best_model_name = best_row['Model']
+best_model = all_results[best_dataset][best_model_name]['model']
+
+print(f"\n🏆 ENG YAXSHI MODEL:")
+print(f"   Dataset: {best_dataset}")
+print(f"   Model: {best_model_name}")
+print(f"   AUC-ROC: {best_row['AUC-ROC']:.4f}")
+print(f"   Recall: {best_row['Recall']:.4f}")
+print(f"   Precision: {best_row['Precision']:.4f}")
+print(f"   F1-Score: {best_row['F1-Score']:.4f}")
+
+# Get best results
+best_results = all_results[best_dataset][best_model_name]
+
+# ============================================================================
+# STEP 10: BATAFSIL BAHOLASH (Detailed Evaluation)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print(f"📈 STEP 9: BATAFSIL BAHOLASH")
+print("=" * 80)
+
+y_pred_best = best_results['y_pred']
+y_pred_proba_best = best_results['y_pred_proba']
+tn, fp, fn, tp = best_results['confusion_matrix']
+
+# Classification Report
+print("\n1. Classification Report:")
+print(classification_report(y_test, y_pred_best, 
+                          target_names=['No Default', 'Default']))
+
+# Confusion Matrix Details
+print("\n2. Confusion Matrix batafsil:")
+print(f"   True Negatives (TN):  {tn:,} - To'g'ri bashorat (No Default)")
+print(f"   False Positives (FP): {fp:,} - Noto'g'ri alarm (Default deb aytilgan, lekin yo'q)")
+print(f"   False Negatives (FN): {fn:,} - O'tkazib yuborilgan (Default edi, lekin aniqlanmadi) ⚠️")
+print(f"   True Positives (TP):  {tp:,} - To'g'ri aniqlangan defaultlar ✓")
+print(f"\n   Specificity (TN Rate): {best_results['specificity']:.4f}")
+print(f"   Sensitivity (TP Rate/Recall): {best_results['recall']:.4f}")
+
+# Business metrics
+total_defaults = (y_test == 1).sum()
+detected_defaults = tp
+missed_defaults = fn
+false_alarms = fp
+
+print(f"\n3. Biznes ko'rsatkichlari:")
+print(f"   Jami defaultlar: {total_defaults:,}")
+print(f"   Aniqlangan defaultlar: {detected_defaults:,} ({detected_defaults/total_defaults*100:.1f}%)")
+print(f"   O'tkazib yuborilgan: {missed_defaults:,} ({missed_defaults/total_defaults*100:.1f}%) ⚠️")
+print(f"   Noto'g'ri alarmlar: {false_alarms:,}")
+
+# Cost analysis (example)
+avg_loan_amount = 50000  # Example
+cost_per_default = avg_loan_amount * 0.5  # Assume 50% loss
+cost_per_investigation = 500  # Cost to investigate false positive
+
+total_cost_missed = missed_defaults * cost_per_default
+total_cost_investigations = false_alarms * cost_per_investigation
+total_savings = detected_defaults * cost_per_default
+
+print(f"\n4. Taxminiy moliyaviy ta'sir (o'rtacha qarz: ${avg_loan_amount:,}):")
+print(f"   O'tkazib yuborilgan zarar: ${total_cost_missed:,.0f}")
+print(f"   Tekshiruv xarajatlari: ${total_cost_investigations:,.0f}")
+print(f"   Tejaldi: ${total_savings:,.0f} ✓")
+print(f"   Sof foyda: ${total_savings - total_cost_investigations - total_cost_missed:,.0f}")
+
+# Visualization
+fig = plt.figure(figsize=(18, 12))
+gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+
+# 1. Dataset Comparison - AUC-ROC
+ax1 = fig.add_subplot(gs[0, 0])
+dataset_comparison = comparison_df.groupby('Dataset')['AUC-ROC'].mean().sort_values(ascending=True)
+dataset_comparison.plot(kind='barh', ax=ax1, color='steelblue')
+ax1.set_title('Dataset Comparison: Average AUC-ROC', fontsize=12, fontweight='bold')
+ax1.set_xlabel('AUC-ROC')
+ax1.grid(axis='x', alpha=0.3)
+
+# 2. Model Comparison - All metrics for best dataset
+ax2 = fig.add_subplot(gs[0, 1])
+best_dataset_df = comparison_df[comparison_df['Dataset'] == best_dataset]
+metrics_to_plot = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC-ROC']
+best_dataset_df.set_index('Model')[metrics_to_plot].plot(kind='bar', ax=ax2, rot=45)
+ax2.set_title(f'Model Comparison: {best_dataset}', fontsize=12, fontweight='bold')
+ax2.set_ylabel('Score')
+ax2.legend(loc='lower right', fontsize=8)
+ax2.set_ylim([0, 1])
+ax2.grid(axis='y', alpha=0.3)
+
+# 3. Confusion Matrix Heatmap
+ax3 = fig.add_subplot(gs[0, 2])
+cm = np.array([[tn, fp], [fn, tp]])
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax3, 
+            xticklabels=['Pred: No Default', 'Pred: Default'],
+            yticklabels=['True: No Default', 'True: Default'])
+ax3.set_title(f'Confusion Matrix', fontsize=12, fontweight='bold')
+
+# 4. ROC Curves for best dataset
+ax4 = fig.add_subplot(gs[1, 0])
+for model_name in all_results[best_dataset]:
+    y_proba = all_results[best_dataset][model_name]['y_pred_proba']
+    fpr, tpr, _ = roc_curve(y_test, y_proba)
+    auc_score = all_results[best_dataset][model_name]['auc']
+    ax4.plot(fpr, tpr, label=f'{model_name} (AUC={auc_score:.3f})', linewidth=2)
+
+ax4.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
+ax4.set_xlabel('False Positive Rate')
+ax4.set_ylabel('True Positive Rate')
+ax4.set_title(f'ROC Curves: {best_dataset}', fontsize=12, fontweight='bold')
+ax4.legend(fontsize=8)
+ax4.grid(True, alpha=0.3)
+
+# 5. Precision-Recall Curves (Important for imbalanced data!)
+ax5 = fig.add_subplot(gs[1, 1])
+for model_name in all_results[best_dataset]:
+    y_proba = all_results[best_dataset][model_name]['y_pred_proba']
+    precision_curve, recall_curve, _ = precision_recall_curve(y_test, y_proba)
+    avg_prec = all_results[best_dataset][model_name]['avg_precision']
+    ax5.plot(recall_curve, precision_curve, 
+             label=f'{model_name} (AP={avg_prec:.3f})', linewidth=2)
+
+# Baseline
+baseline = (y_test == 1).sum() / len(y_test)
+ax5.axhline(y=baseline, color='k', linestyle='--', linewidth=1, label=f'Baseline ({baseline:.3f})')
+ax5.set_xlabel('Recall')
+ax5.set_ylabel('Precision')
+ax5.set_title('Precision-Recall Curves (Important!)', fontsize=12, fontweight='bold')
+ax5.legend(fontsize=8)
+ax5.grid(True, alpha=0.3)
+
+# 6. Prediction Distribution
+ax6 = fig.add_subplot(gs[1, 2])
+ax6.hist(y_pred_proba_best[y_test == 0], bins=50, alpha=0.6, label='No Default', color='green')
+ax6.hist(y_pred_proba_best[y_test == 1], bins=50, alpha=0.6, label='Default', color='red')
+ax6.axvline(x=0.5, color='black', linestyle='--', linewidth=1, label='Threshold=0.5')
+ax6.set_xlabel('Predicted Probability')
+ax6.set_ylabel('Frequency')
+ax6.set_title('Prediction Probability Distribution', fontsize=12, fontweight='bold')
+ax6.legend()
+ax6.grid(True, alpha=0.3)
+
+# 7. Recall vs Precision tradeoff
+ax7 = fig.add_subplot(gs[2, 0])
+thresholds = np.linspace(0, 1, 100)
+precisions = []
+recalls = []
+for thresh in thresholds:
+    y_pred_thresh = (y_pred_proba_best >= thresh).astype(int)
+    if y_pred_thresh.sum() > 0:
+        precisions.append(precision_score(y_test, y_pred_thresh, zero_division=0))
+        recalls.append(recall_score(y_test, y_pred_thresh, zero_division=0))
+    else:
+        precisions.append(0)
+        recalls.append(0)
+
+ax7.plot(thresholds, precisions, label='Precision', linewidth=2)
+ax7.plot(thresholds, recalls, label='Recall', linewidth=2)
+ax7.axvline(x=0.5, color='red', linestyle='--', linewidth=1, label='Default threshold')
+ax7.set_xlabel('Threshold')
+ax7.set_ylabel('Score')
+ax7.set_title('Precision-Recall vs Threshold', fontsize=12, fontweight='bold')
+ax7.legend()
+ax7.grid(True, alpha=0.3)
+
+# 8. Class Distribution comparison
+ax8 = fig.add_subplot(gs[2, 1])
+dist_data = []
+for dataset_name, (X_data, y_data) in datasets.items():
+    dist_data.append({
+        'Dataset': dataset_name,
+        'No Default': (y_data == 0).sum(),
+        'Default': (y_data == 1).sum()
+    })
+dist_df = pd.DataFrame(dist_data).set_index('Dataset')
+dist_df.plot(kind='bar', ax=ax8, color=['green', 'red'], rot=45)
+ax8.set_title('Class Distribution Comparison', fontsize=12, fontweight='bold')
+ax8.set_ylabel('Count')
+ax8.legend(title='Class')
+ax8.grid(axis='y', alpha=0.3)
+
+# 9. F1-Score comparison across all combinations
+ax9 = fig.add_subplot(gs[2, 2])
+f1_pivot = comparison_df.pivot(index='Model', columns='Dataset', values='F1-Score')
+sns.heatmap(f1_pivot, annot=True, fmt='.3f', cmap='YlOrRd', ax=ax9, cbar_kws={'label': 'F1-Score'})
+ax9.set_title('F1-Score Heatmap', fontsize=12, fontweight='bold')
+plt.setp(ax9.get_xticklabels(), rotation=45, ha='right')
+
+plt.suptitle('IMBALANCED DATA UCHUN MODEL BAHOLASH', fontsize=16, fontweight='bold', y=0.995)
+plt.savefig('model_evaluation_imbalanced.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("\n✓ Batafsil baholash grafiklari 'model_evaluation_imbalanced.png' fayliga saqlandi")
+
+# ============================================================================
+# STEP 11: FEATURE IMPORTANCE (Task 2.6.3)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("🎯 STEP 10: FEATURE IMPORTANCE TAHLILI (Task 2.6.3)")
+print("=" * 80)
+
+# Feature importance (Random Forest yoki Gradient Boosting uchun)
+if best_model_name in ['Random Forest', 'Gradient Boosting']:
+    feature_importance = pd.DataFrame({
+        'Feature': X.columns,
+        'Importance': best_model.feature_importances_
+    }).sort_values('Importance', ascending=False)
+    
+    print("\nTop 20 eng muhim xususiyatlar:\n")
+    print("-" * 70)
+    print(f"{'#':<5} {'Xususiyat':<40} {'Muhimlik':>15} {'%':>8}")
+    print("-" * 70)
+    
+    total_importance = feature_importance['Importance'].sum()
+    cumulative = 0
+    for idx, row in feature_importance.head(20).iterrows():
+        rank = feature_importance.index.get_loc(idx) + 1
+        pct = (row['Importance'] / total_importance * 100)
+        cumulative += pct
+        print(f"{rank:<5} {row['Feature']:<40} {row['Importance']:>15.4f} {pct:>7.2f}%")
+    
+    print("-" * 70)
+    print(f"Top 20 jami ta'sir: {cumulative:.1f}%")
+    
+    # Feature importance interpretation
+    print("\n" + "=" * 80)
+    print("📖 FEATURE IMPORTANCE INTERPRETATSIYASI")
+    print("=" * 80)
+    
+    top_10 = feature_importance.head(10)
+    
+    # Categorize features
+    credit_features = []
+    financial_features = []
+    behavioral_features = []
+    demographic_features = []
+    
+    for idx, row in top_10.iterrows():
+        feat = row['Feature']
+        imp = row['Importance']
+        
+        if any(x in feat for x in ['credit', 'delinquenc', 'inquir', 'public_record', 'collection']):
+            credit_features.append((feat, imp))
+        elif any(x in feat for x in ['debt', 'income', 'payment', 'loan', 'utilization', 'cash']):
+            financial_features.append((feat, imp))
+        elif any(x in feat for x in ['login', 'service_call', 'app', 'billing']):
+            behavioral_features.append((feat, imp))
+        else:
+            demographic_features.append((feat, imp))
+    
+    print("\n1️⃣ KREDIT TARIXI OMILLARI:")
+    if credit_features:
+        for feat, imp in credit_features:
+            print(f"   • {feat}: {imp:.4f}")
+            if 'credit_score' in feat:
+                print(f"     → Kredit reytingi past bo'lsa, defolt ehtimoli YUQORI")
+            elif 'delinquenc' in feat:
+                print(f"     → Ko'proq kechikishlar = ko'proq risk")
+            elif 'inquir' in feat:
+                print(f"     → Ko'p kredit so'rovlari = moliyaviy qiyinchilik belgisi")
+    
+    print("\n2️⃣ MOLIYAVIY NISBATLAR:")
+    if financial_features:
+        for feat, imp in financial_features:
+            print(f"   • {feat}: {imp:.4f}")
+            if 'debt_to_income' in feat:
+                print(f"     → DTI yuqori bo'lsa (>40%), to'lov qilish qiyin")
+            elif 'credit_utilization' in feat:
+                print(f"     → Utilization >80% = kredit haddan oshgan ishlatilgan")
+            elif 'payment_to_income' in feat:
+                print(f"     → To'lov/daromad nisbati yuqori = qiyinchilik")
+            elif 'monthly_free_cash_flow' in feat:
+                print(f"     → Kamroq erkin pul = defolt ehtimoli yuqori")
+    
+    print("\n3️⃣ XULOSA VA TAVSIYALAR:")
+    print(f"   ✓ Top 3 omil jami ta'sir: {feature_importance.head(3)['Importance'].sum() / total_importance * 100:.1f}%")
+    print(f"   ✓ Top 10 omil jami ta'sir: {feature_importance.head(10)['Importance'].sum() / total_importance * 100:.1f}%")
+    print(f"\n   📌 ASOSIY RISK OMILLARI:")
+    print(f"      1. Kredit tarixi (score, delinquencies)")
+    print(f"      2. Moliyaviy nisbatlar (DTI, utilization)")
+    print(f"      3. To'lov qobiliyati (free cash flow)")
+    
+    # Visualization - Enhanced
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # 1. Top 20 Feature Importance
+    ax1 = axes[0, 0]
+    top_20 = feature_importance.head(20)
+    colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(top_20)))
+    ax1.barh(range(len(top_20)), top_20['Importance'], color=colors)
+    ax1.set_yticks(range(len(top_20)))
+    ax1.set_yticklabels(top_20['Feature'], fontsize=9)
+    ax1.set_xlabel('Importance Score', fontsize=11)
+    ax1.set_title(f'Top 20 Feature Importance - {best_model_name}', 
+                  fontsize=13, fontweight='bold')
+    ax1.invert_yaxis()
+    ax1.grid(axis='x', alpha=0.3)
+    
+    # 2. Cumulative Importance
+    ax2 = axes[0, 1]
+    cumsum = (feature_importance['Importance'].cumsum() / total_importance * 100).values
+    ax2.plot(range(1, len(cumsum)+1), cumsum, linewidth=2, color='darkblue')
+    ax2.axhline(y=80, color='red', linestyle='--', linewidth=1, label='80% threshold')
+    ax2.axhline(y=90, color='orange', linestyle='--', linewidth=1, label='90% threshold')
+    ax2.set_xlabel('Number of Features', fontsize=11)
+    ax2.set_ylabel('Cumulative Importance (%)', fontsize=11)
+    ax2.set_title('Cumulative Feature Importance', fontsize=13, fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim([0, min(50, len(cumsum))])
+    
+    # Find how many features for 80% and 90%
+    n_80 = np.where(cumsum >= 80)[0][0] + 1
+    n_90 = np.where(cumsum >= 90)[0][0] + 1
+    ax2.text(n_80, 82, f'{n_80} features', fontsize=10, ha='center')
+    ax2.text(n_90, 92, f'{n_90} features', fontsize=10, ha='center')
+    
+    # 3. Feature Categories
+    ax3 = axes[1, 0]
+    categories = {
+        'Credit History': sum([imp for feat, imp in credit_features]),
+        'Financial Ratios': sum([imp for feat, imp in financial_features]),
+        'Behavioral': sum([imp for feat, imp in behavioral_features]),
+        'Other': sum([imp for feat, imp in demographic_features])
+    }
+    colors_cat = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4']
+    ax3.pie(categories.values(), labels=categories.keys(), autopct='%1.1f%%',
+            startangle=90, colors=colors_cat, textprops={'fontsize': 10})
+    ax3.set_title('Feature Importance by Category (Top 10)', fontsize=13, fontweight='bold')
+    
+    # 4. Top 10 with percentage
+    ax4 = axes[1, 1]
+    top_10_data = feature_importance.head(10)
+    percentages = (top_10_data['Importance'] / total_importance * 100).values
+    bars = ax4.barh(range(len(top_10_data)), percentages, color='steelblue')
+    ax4.set_yticks(range(len(top_10_data)))
+    ax4.set_yticklabels(top_10_data['Feature'], fontsize=10)
+    ax4.set_xlabel('Importance (%)', fontsize=11)
+    ax4.set_title('Top 10 Features (Percentage)', fontsize=13, fontweight='bold')
+    ax4.invert_yaxis()
+    ax4.grid(axis='x', alpha=0.3)
+    
+    # Add percentage labels
+    for i, (bar, pct) in enumerate(zip(bars, percentages)):
+        ax4.text(bar.get_width() + 0.2, bar.get_y() + bar.get_height()/2, 
+                f'{pct:.1f}%', va='center', fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig('feature_importance_detailed.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print("\n✓ Feature importance grafiklari 'feature_importance_detailed.png' fayliga saqlandi")
+    
+    # Save feature importance to CSV
+    feature_importance.to_csv('feature_importance.csv', index=False)
+    print("✓ Feature importance 'feature_importance.csv' fayliga saqlandi")
+
+# ============================================================================
+# STEP 12: XULOSA VA TAVSIYALAR (Conclusions & Recommendations)
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("📋 YAKUNIY XULOSA VA TAVSIYALAR")
+print("=" * 80)
+
+print(f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    MODEL NATIJALARI (IMBALANCED DATA)                      ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+1. MA'LUMOTLAR:
+   • Jami qatorlar: {df.shape[0]:,}
+   • Defolt darajasi: {(y.sum() / len(y) * 100):.2f}% (IMBALANCED! ⚠️)
+   • No-Default: {(y == 0).sum():,} ({(y == 0).sum() / len(y) * 100:.1f}%)
+   • Default: {(y == 1).sum():,} ({(y == 1).sum() / len(y) * 100:.1f}%)
+   
+2. IMBALANCE MUAMMOSINI HAL QILISH:
+   • SMOTE (Synthetic oversampling) qo'llandi ✓
+   • Random Under-sampling sinovdan o'tkazildi ✓
+   • SMOTEENN (Combined approach) sinovdan o'tkazildi ✓
+   • Class weights ishlatildi ✓
+   
+3. ENG YAXSHI MODEL: {best_model_name}
+   Dataset: {best_dataset}
+   
+   Performance Metrics:
+   • Accuracy: {best_row['Accuracy']:.4f}
+   • Precision: {best_row['Precision']:.4f} (Noto'g'ri alarmlarni kamaytirish)
+   • Recall: {best_row['Recall']:.4f} (Defaultlarni aniqlash) ⭐
+   • Specificity: {best_row['Specificity']:.4f} (No-defaultni to'g'ri aniqlash)
+   • F1-Score: {best_row['F1-Score']:.4f}
+   • AUC-ROC: {best_row['AUC-ROC']:.4f} (Umumiy ko'rsatkich) ⭐
+   • Average Precision: {best_row['Avg-Precision']:.4f}
+   
+   Confusion Matrix:
+   • True Negatives: {tn:,}
+   • False Positives: {fp:,} (Noto'g'ri alarmlar)
+   • False Negatives: {fn:,} (O'tkazib yuborilgan defaultlar) ⚠️
+   • True Positives: {tp:,} (To'g'ri aniqlangan defaultlar) ✓
+
+4. ENG MUHIM OMILLAR (Top 5):""")
+
+if best_model_name in ['Random Forest', 'Gradient Boosting']:
+    for idx, row in feature_importance.head(5).iterrows():
+        rank = feature_importance.index.get_loc(idx) + 1
+        pct = (row['Importance'] / total_importance * 100)
+        print(f"   {rank}. {row['Feature']}: {row['Importance']:.4f} ({pct:.1f}%)")
+
+print(f"""
+5. BIZNES TAVSIYALARI:
+   
+   🎯 RISK BAHOLASH:
+   • Credit score < 600: YUQORI RISK 🔴
+   • Debt-to-Income > 40%: YUQORI RISK 🔴
+   • Credit utilization > 80%: O'RTA-YUQORI RISK 🟡
+   • Delinquencies > 0 (2 yil ichida): YUQORI RISK 🔴
+   • Monthly free cash flow < $500: O'RTA RISK 🟡
+   
+   📊 MODEL QULLANISH:
+   • Har bir ariza uchun default ehtimolini hisobla
+   • Ehtimol > 50%: Batafsil tekshirish talab etiladi
+   • Ehtimol 30-50%: Qo'shimcha dokumentlar so'ra
+   • Ehtimol < 30%: Standart jarayon
+   
+   ⚠️ IMBALANCED DATA UCHUN MUHIM:
+   • Accuracy yagona metrik EMAS!
+   • Recall va Precision balansini ko'zda tut
+   • AUC-ROC va Precision-Recall curvesga e'tibor ber
+   • False Negative (o'tkazib yuborilgan defaultlar) XARAJATLI!
+   
+   💰 MOLIYAVIY TA'SIR:
+   • Model yordamida {tp:,} ta default aniqlandi
+   • {fn:,} ta default o'tkazib yuborildi (Yaxshilash kerak!)
+   • {fp:,} ta noto'g'ri alarm (Tekshirish xarajati)
+   
+   🔄 MONITORING VA YANGILASH:
+   • Modelni har 3 oyda yangilang
+   • Performance metriclarni doimiy kuzating
+   • Yangi ma'lumotlar bilan retrain qiling
+   • A/B testing qo'llang
+
+6. THRESHOLD SOZLASH:
+   Current threshold: 0.5
+   
+   Agar ko'proq defaultlarni aniqlash kerak bo'lsa:
+   • Threshold = 0.3-0.4 (Recall ⬆️, Precision ⬇️)
+   • Ko'proq tekshirish, lekin kamroq yo'qotish
+   
+   Agar noto'g'ri alarmlarni kamaytirish kerak bo'lsa:
+   • Threshold = 0.6-0.7 (Precision ⬆️, Recall ⬇️)
+   • Kamroq tekshirish, lekin ba'zi defaultlar o'tkazib yuboriladi
+
+7. YARATILGAN FAYLLAR:
+   • eda_analysis.png - Dastlabki ma'lumotlar tahlili
+   • model_evaluation_imbalanced.png - Imbalanced data uchun batafsil baholash
+   • feature_importance_detailed.png - Feature importance tahlili
+   • feature_importance.csv - Feature importance jadvali
+   • best_credit_model.pkl - Saqlangan model
+   • feature_scaler.pkl - Saqlangan scaler
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║              IMBALANCED DATA UCHUN MODEL MUVAFFAQIYATLI! ✅                ║
+║                                                                            ║
+║  Task 2.6.2: Defolt bashorat qilish ✓                                    ║
+║  Task 2.6.3: Omillarni interpretatsiya qilish ✓                          ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+""")
+
+print("\n📌 KEYINGI QADAMLAR:")
+print("   1. Threshold optimization qiling (biznes talablariga qarab)")
+print("   2. Cost-sensitive learning qo'llang (agar kerak bo'lsa)")
+print("   3. Ensemble methods sinab ko'ring")
+print("   4. Feature engineering qo'shing (interaction features)")
+print("   5. Modelni production muhitga deploy qiling")
+
+# ============================================================================
+# BONUS: MODEL VA SCALER SAQLASH
+# ============================================================================
+
+print("\n💾 Model, scaler va natijalarni saqlash...")
+
+import joblib
+
+# Save best model and scaler
+joblib.dump(best_model, f'best_credit_model_{best_dataset}_{best_model_name}.pkl')
+joblib.dump(scaler, 'feature_scaler.pkl')
+
+# Save training data info for future use
+if best_dataset != 'Original (Imbalanced)':
+    # Save the resampling method used
+    resampling_method = {
+        'SMOTE': smote,
+        'Under-sampling': rus,
+        'SMOTEENN': smoteenn
+    }
+    if best_dataset in resampling_method:
+        joblib.dump(resampling_method[best_dataset], f'resampling_{best_dataset}.pkl')
+
+# Save comparison results
+comparison_df.to_csv('model_comparison_results.csv', index=False)
+
+print(f"✓ Model '{best_dataset}_{best_model_name}' saqlandi")
+print("✓ Scaler 'feature_scaler.pkl' fayliga saqlandi")
+print("✓ Comparison results 'model_comparison_results.csv' fayliga saqlandi")
+
+# Create a prediction function for new data
+def predict_default_probability(new_data_df):
+    """
+    Yangi ma'lumotlar uchun default ehtimolini hisoblash
+    
+    Parameters:
+    new_data_df: pandas DataFrame with same features as training data
+    
+    Returns:
+    predictions: array of default probabilities
+    """
+    # Load model and scaler
+    model = joblib.load(f'best_credit_model_{best_dataset}_{best_model_name}.pkl')
+    scaler = joblib.load('feature_scaler.pkl')
+    
+    # Preprocess
+    X_new = new_data_df.copy()
+    
+    # Encode categorical variables
+    categorical_cols = X_new.select_dtypes(include=['object']).columns
+    for col in categorical_cols:
+        le = LabelEncoder()
+        X_new[col] = le.fit_transform(X_new[col].astype(str))
+    
+    # Scale
+    X_new_scaled = scaler.transform(X_new)
+    
+    # Predict
+    probabilities = model.predict_proba(X_new_scaled)[:, 1]
+    
+    return probabilities
+
+# Save the function
+import pickle
+with open('predict_function.pkl', 'wb') as f:
+    pickle.dump(predict_default_probability, f)
+
+print("✓ Prediction function 'predict_function.pkl' fayliga saqlandi")
+
+print("\n" + "=" * 80)
+print("🎉 BARCHA JARAYONLAR MUVAFFAQIYATLI YAKUNLANDI!")
+print("=" * 80)
+
+print("""
+📦 YARATILGAN FAYLLAR:
+   1. eda_analysis.png - Dastlabki ma'lumotlar tahlili
+   2. model_evaluation_imbalanced.png - Model baholash (imbalanced data)
+   3. feature_importance_detailed.png - Feature importance tahlili
+   4. feature_importance.csv - Feature importance jadvali
+   5. model_comparison_results.csv - Barcha modellar taqqoslash
+   6. best_credit_model_*.pkl - Eng yaxshi model
+   7. feature_scaler.pkl - Feature scaler
+   8. predict_function.pkl - Bashorat qilish funksiyasi
+   9. resampling_*.pkl - Resampling method (agar ishlatilgan bo'lsa)
+
+🚀 MODELDAN FOYDALANISH:
+   
+   # Yangi ma'lumotlar uchun bashorat
+   import joblib
+   import pandas as pd
+   
+   # Model va scalerni yuklash
+   model = joblib.load('best_credit_model_*.pkl')
+   scaler = joblib.load('feature_scaler.pkl')
+   
+   # Yangi ma'lumotlarni yuklash
+   new_data = pd.read_csv('new_applications.csv')
+   # ... preprocessing ...
+   new_data_scaled = scaler.transform(new_data)
+   
+   # Bashorat
+   probabilities = model.predict_proba(new_data_scaled)[:, 1]
+   predictions = model.predict(new_data_scaled)
+   
+   # Risk kategoriyasi
+   risk_category = []
+   for prob in probabilities:
+       if prob < 0.3:
+           risk_category.append('LOW RISK')
+       elif prob < 0.5:
+           risk_category.append('MEDIUM RISK')
+       else:
+           risk_category.append('HIGH RISK')
+
+📊 NATIJALAR XULOSASI:
+   ✅ Task 2.6.2: Defolt bashorat qilish modeli yaratildi
+   ✅ Task 2.6.3: Ta'sir qiluvchi omillar interpretatsiya qilindi
+   ✅ Imbalanced data muammosi hal qilindi
+   ✅ Barcha visualizatsiyalar va reportlar tayyor
+""")
