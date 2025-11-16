@@ -1,23 +1,18 @@
-```
-# predict_default_model_robust.py
+# predict_default_model
 import os
 import joblib
 import numpy as np
 import pandas as pd
 
-# ---------- CONFIG ----------
 DATA_PATH = r"C:\Users\furqa\OneDrive\Desktop\python\merged_final_data.csv"  # change to your new dataset
 MODEL_PATH = r"model_results\final_pd_model.joblib"
 OUTPUT_PATH = "result.csv"
-# ----------------------------
 
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Train first.")
 
-# Load artifacts
 artifacts = joblib.load(MODEL_PATH)
 
-# Required keys check
 required = ["selected_features", "final_model_calibrated", "thresholds"]
 for k in required:
     if k not in artifacts:
@@ -29,53 +24,40 @@ imputer = artifacts.get("imputer", None)
 model = artifacts["final_model_calibrated"]
 thresholds = artifacts.get("thresholds", {})
 
-# Extract thresholds (fallback to 0.5 if missing)
 thr_f1 = thresholds.get("best_f1", {}).get("threshold", 0.5)
 thr_youden = thresholds.get("best_youden", {}).get("threshold", 0.5)
 
-# Numeric columns used by model (infer)
 numeric_cols_model = [c for c in selected_features if c not in selected_cat]
 
-# Load new data
 df = pd.read_csv(DATA_PATH)
 print("Loaded new dataset:", df.shape)
 
-# Ensure all selected features exist; if missing, create with NaN
 for col in selected_features:
     if col not in df.columns:
         df[col] = np.nan
 
-# Fill categorical features
 for c in selected_cat:
-    # ensure column exists (we created missing above), cast to str and fill
     df[c] = df[c].astype(str).fillna("Missing")
 
-# NUMERIC IMPUTATION - robust handling
 if imputer is not None:
-    # If imputer has feature_names_in_, use that exact column order expected
     if hasattr(imputer, "feature_names_in_"):
         imputer_cols = list(imputer.feature_names_in_)
-        # ensure all imputer columns exist in df
         for c in imputer_cols:
             if c not in df.columns:
                 df[c] = np.nan
         try:
             df[imputer_cols] = imputer.transform(df[imputer_cols])
         except Exception as e:
-            # fallback: try to transform only numeric_cols_model if lengths match
             if len(imputer_cols) == len(numeric_cols_model):
                 for c in numeric_cols_model:
                     if c not in df.columns:
                         df[c] = np.nan
                 df[numeric_cols_model] = imputer.transform(df[numeric_cols_model])
             else:
-                # last resort: fill numeric_cols_model with column medians of the new df
                 print("Imputer transform failed; falling back to median fill for numeric model cols. Error:", e)
                 df[numeric_cols_model] = df[numeric_cols_model].fillna(df[numeric_cols_model].median())
     else:
-        # imputer without feature_names_in_ (older sklearn): try using numeric_cols_model
         try:
-            # ensure numeric_cols_model exist
             for c in numeric_cols_model:
                 if c not in df.columns:
                     df[c] = np.nan
@@ -84,26 +66,19 @@ if imputer is not None:
             print("Imputer.transform failed; falling back to median fill for numeric model cols. Error:", e)
             df[numeric_cols_model] = df[numeric_cols_model].fillna(df[numeric_cols_model].median())
 else:
-    # No imputer saved — fill numeric model cols with new-data medians (sensible fallback)
     df[numeric_cols_model] = df[numeric_cols_model].fillna(df[numeric_cols_model].median())
 
-# Final input matrix for model (order matters)
 X_new = df[selected_features].copy()
 
-# Predict probabilities (calibrated model expected)
 try:
     probs = model.predict_proba(X_new)[:, 1]
 except Exception as e:
-    # If model is a CalibratedClassifierCV wrapping CatBoost, it should work.
-    # If model expects Pool with cat_features, attempt to provide pandas and hope it works.
     raise RuntimeError("Model prediction failed. Error: " + str(e))
 
-# Apply thresholds
 pred_05 = (probs >= 0.5).astype(int)
 pred_f1 = (probs >= thr_f1).astype(int)
 pred_youden = (probs >= thr_youden).astype(int)
 
-# Build output
 output = pd.DataFrame({
     "prob_default": probs,
     "pred_0.50": pred_05,
@@ -111,13 +86,10 @@ output = pd.DataFrame({
     f"pred_bestYouden_{thr_youden:.2f}": pred_youden
 })
 
-# Optionally append original identifier columns if present (customer_id, application_id)
 for id_col in ["customer_id", "application_id"]:
     if id_col in df.columns:
         output[id_col] = df[id_col]
 
-# Save
 output.to_csv(OUTPUT_PATH, index=False)
 print(f"✅ Predictions saved to {OUTPUT_PATH}")
 print(output.head())
-```
