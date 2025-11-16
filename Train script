@@ -1,18 +1,3 @@
-```
-# final_default_model_with_calibration.py
-"""
-Production-ready credit-default modeling pipeline with:
-
-- Clean preprocessing (no leakage)
-- CatBoost with native categorical handling
-- Model-based feature selection using CatBoost importance
-- GridSearchCV optimizing F1
-- Final model with early stopping on test set
-- Isotonic calibration (very important for good PD probabilities)
-- Threshold sweep for best F1, Youden's J, Balanced Accuracy
-- Saves calibrated model and all artifacts
-"""
-
 import os
 import warnings
 warnings.filterwarnings("ignore")
@@ -26,7 +11,6 @@ from sklearn.calibration import CalibratedClassifierCV
 from catboost import CatBoostClassifier, Pool
 import joblib
 
-# ---------------- SETTINGS ----------------
 DATA_PATH = r"C:\Users\furqa\OneDrive\Desktop\python\merged_customer_data.csv"
 RESULTS_DIR = "model_results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -37,7 +21,6 @@ TOP_K_FEATURES = 25
 LIGHT_MODEL_ITERS = 400
 FINAL_ITERS = 2000
 CV_FOLDS = 3
-# ------------------------------------------
 
 def cap_outliers(s):
     q1 = s.quantile(0.25)
@@ -54,10 +37,8 @@ def compute_metrics(y_true, y_pred, y_prob):
         "specificity": tn / (tn + fp) if (tn + fp) else 0,
         "f1": f1_score(y_true, y_pred, zero_division=0),
         "auc": roc_auc_score(y_true, y_prob),
-        "tn": tn, "fp": fp, "fn": fn, "tp": tp
-    }
+        "tn": tn, "fp": fp, "fn": fn, "tp": tp}
 
-# ---------------- LOAD DATA ----------------
 df = pd.read_csv(DATA_PATH)
 print("Loaded:", df.shape)
 
@@ -69,30 +50,25 @@ if 'default' not in df.columns:
 
 df['default'] = df['default'].astype(int)
 
-# Rare grouping
 for col in ['state', 'marketing_campaign']:
     if col in df.columns:
         vc = df[col].value_counts()
         rare = vc[vc < 100].index
         df[col] = df[col].apply(lambda x: 'Other' if x in rare else x)
 
-# Outlier capping
 for col in ['annual_income', 'total_debt_amount', 'loan_amount']:
     if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
         df[col] = cap_outliers(df[col])
 
-# Interaction features
 if 'credit_score' in df.columns and 'debt_to_income_ratio' in df.columns:
     df['credit_score_debt_interaction'] = df['credit_score'] * df['debt_to_income_ratio']
 
 if 'num_delinquencies_2yrs' in df.columns and 'credit_utilization' in df.columns:
     df['delinq_credit_util_interaction'] = df['num_delinquencies_2yrs'] * df['credit_utilization']
 
-# ---------------- DTYPE DETECTION ----------------
 cat_cols = [c for c in df.columns if df[c].dtype == 'object' and c != 'default']
 num_cols = [c for c in df.columns if c not in cat_cols + ['default']]
 
-# Convert low-card numeric to categorical
 for c in num_cols.copy():
     if df[c].nunique() <= 15:
         df[c] = df[c].astype(str)
@@ -101,15 +77,12 @@ for c in num_cols.copy():
 
 print(f"Numeric: {len(num_cols)}, Categorical: {len(cat_cols)}")
 
-# ---------------- SPLIT ----------------
 X = df.drop(columns=['default'])
 y = df['default']
 
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
-)
+    X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE)
 
-# Impute numeric
 if num_cols:
     imputer = SimpleImputer(strategy='median')
     X_train[num_cols] = imputer.fit_transform(X_train[num_cols])
@@ -117,12 +90,10 @@ if num_cols:
 else:
     imputer = None
 
-# Fill categorical
 for c in cat_cols:
     X_train[c] = X_train[c].astype(str).fillna("Missing")
     X_test[c] = X_test[c].astype(str).fillna("Missing")
 
-# ---------------- LIGHT MODEL FOR FEATURE SELECTION ----------------
 print("\nTraining light CatBoost for feature selection…")
 
 light_model = CatBoostClassifier(
@@ -131,8 +102,7 @@ light_model = CatBoostClassifier(
     depth=4,
     auto_class_weights="Balanced",
     random_seed=RANDOM_STATE,
-    verbose=0
-)
+    verbose=0)
 
 light_pool = Pool(X_train, y_train, cat_features=cat_cols)
 light_model.fit(light_pool)
@@ -146,13 +116,12 @@ imp_df = imp_df.sort_values("importance", ascending=False).reset_index(drop=True
 selected_features = imp_df["feature"].iloc[:TOP_K_FEATURES].tolist()
 print("Selected features:", selected_features)
 
-# ---------------- SELECTED TRAIN/TEST ----------------
+# TRAIN/TEST 
 X_train_sel = X_train[selected_features].copy()
 X_test_sel = X_test[selected_features].copy()
 
 selected_cat = [c for c in selected_features if c in cat_cols]
 
-# ---------------- GRID SEARCH ----------------
 print("\nRunning GridSearchCV…")
 
 base_model = CatBoostClassifier(
@@ -161,14 +130,12 @@ base_model = CatBoostClassifier(
     eval_metric="AUC",
     auto_class_weights="Balanced",
     random_seed=RANDOM_STATE,
-    verbose=0
-)
+    verbose=0)
 
 param_grid = {
     "depth": [5, 6],
     "learning_rate": [0.01, 0.03],
-    "l2_leaf_reg": [3, 7],
-}
+    "l2_leaf_reg": [3, 7],}
 
 cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
 
@@ -178,15 +145,13 @@ grid = GridSearchCV(
     scoring="f1",
     cv=cv,
     n_jobs=-1,
-    verbose=2
-)
+    verbose=2)
 
 grid.fit(X_train_sel, y_train, cat_features=selected_cat)
 
 print("Best Params:", grid.best_params_)
 print("Best CV F1:", grid.best_score_)
 
-# ---------------- FINAL MODEL WITH EARLY STOP ----------------
 print("\nTraining final model with early stopping…")
 
 final_model = CatBoostClassifier(
@@ -199,26 +164,23 @@ final_model = CatBoostClassifier(
     auto_class_weights="Balanced",
     random_seed=RANDOM_STATE,
     verbose=100,
-    early_stopping_rounds=100
-)
+    early_stopping_rounds=100)
 
 final_model.fit(
     X_train_sel, y_train,
     eval_set=(X_test_sel, y_test),
     cat_features=selected_cat,
-    use_best_model=True
-)
+    use_best_model=True)
 
-# ---------------- ISOTONIC CALIBRATION ----------------
+
 print("\nCalibrating probabilities with Isotonic Regression…")
 
 calibrator = CalibratedClassifierCV(final_model, method="isotonic", cv="prefit")
 calibrator.fit(X_test_sel, y_test)
 
-# Use calibrated model
+# calibrated model
 final_model_calibrated = calibrator
 
-# ---------------- PREDICTIONS ----------------
 y_prob = final_model_calibrated.predict_proba(X_test_sel)[:, 1]
 y_pred_default = (y_prob >= 0.5).astype(int)
 
@@ -230,7 +192,7 @@ for k, v in metrics_05.items():
     print(f"{k}: {v:.4f}")
 print("Confusion:", metrics_05["tn"], metrics_05["fp"], metrics_05["fn"], metrics_05["tp"])
 
-# ---------------- THRESHOLD OPTIMIZATION ----------------
+# THRESHOLD OPTIMIZATION 
 thresholds = np.arange(0.01, 0.99, 0.01)
 records = []
 
@@ -247,8 +209,7 @@ for t in thresholds:
         "specificity": m["specificity"],
         "accuracy": m["accuracy"],
         "balanced_accuracy": bal_acc,
-        "youden": youden,
-    })
+        "youden": youden,})
 
 rec_df = pd.DataFrame(records)
 
@@ -264,17 +225,14 @@ print("Best Balanced Accuracy:", best_balacc.to_dict())
 important_thresholds = {
     "best_f1": best_f1.to_dict(),
     "best_youden": best_youden.to_dict(),
-    "best_balacc": best_balacc.to_dict(),
-}
+    "best_balacc": best_balacc.to_dict(),}
 
-# ---------------- SAVE ARTIFACTS ----------------
 artifacts = {
     "selected_features": selected_features,
     "selected_cat": selected_cat,
     "imputer": imputer,
     "final_model_calibrated": final_model_calibrated,
-    "thresholds": important_thresholds,
-}
+    "thresholds": important_thresholds,}
 
 joblib.dump(artifacts, os.path.join(RESULTS_DIR, "final_pd_model.joblib"))
 rec_df.to_csv(os.path.join(RESULTS_DIR, "threshold_metrics.csv"), index=False)
@@ -282,5 +240,3 @@ rec_df.to_csv(os.path.join(RESULTS_DIR, "threshold_metrics.csv"), index=False)
 print("\nModel + artifacts saved!")
 print("Path:", os.path.join(RESULTS_DIR, "final_pd_model.joblib"))
 
-# END
-```
