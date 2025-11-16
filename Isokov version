@@ -1,13 +1,12 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.feature_selection import SelectKBest, f_classif
-from imblearn.over_sampling import ADASYN
-from category_encoders import TargetEncoder
 from catboost import CatBoostClassifier, Pool
+from category_encoders import TargetEncoder
 
 # Load data
 df = pd.read_csv('data/merged_customer_data.csv')
@@ -16,28 +15,16 @@ df = pd.read_csv('data/merged_customer_data.csv')
 drop_cols = ['customer_id', 'application_id', 'referral_code', 'random_noise_1', 'previous_zip_code']
 df = df.drop(drop_cols, axis=1)
 
-# Feature engineering
-# Cap outliers (1.5*IQR rule)
-for col in ['annual_income', 'total_debt_amount', 'loan_amount']:
-    if col in df.columns:
-        Q1, Q3 = df[col].quantile([0.25, 0.75])
-        IQR = Q3 - Q1
-        df[col] = df[col].clip(lower=Q1 - 1.5*IQR, upper=Q3 + 1.5*IQR)
-
-# Interaction terms
-if 'credit_score' in df.columns and 'debt_to_income_ratio' in df.columns:
-    df['credit_score_debt_interaction'] = df['credit_score'] * df['debt_to_income_ratio']
-if 'num_delinquencies_2yrs' in df.columns and 'credit_utilization' in df.columns:
-    df['delinq_credit_util_interaction'] = df['num_delinquencies_2yrs'] * df['credit_utilization']
-
-# Group rare categories
+# Feature engineering: Group rare categories and drop low-importance features
 for col in ['state', 'marketing_campaign']:
     if col in df.columns:
         counts = df[col].value_counts()
         rare = counts[counts < 100].index
         df[col] = df[col].apply(lambda x: 'Other' if x in rare else x)
+if 'num_credit_accounts_0' in df.columns and df['num_credit_accounts_0'].nunique() == 1:
+    df = df.drop('num_credit_accounts_0', axis=1)
 
-# Drop highly correlated debt features
+# Check for multicollinearity
 debt_cols = ['debt_to_income_ratio', 'total_debt_amount', 'monthly_debt_payment', 'debt_service_ratio']
 for col1 in debt_cols:
     for col2 in debt_cols:
@@ -55,18 +42,14 @@ object_cols = [col for col in X.columns if X[col].dtype == 'object']
 cat_cols = object_cols + [col for col in X.columns if X[col].nunique() < 50 and X[col].dtype != 'object']
 num_cols = [col for col in X.columns if col not in cat_cols]
 
-# Special handling for num_delinquencies_2yrs if categorical
-if 'num_delinquencies_2yrs' in cat_cols:
-    cat_cols.remove('num_delinquencies_2yrs')
-    cat_cols.append('num_delinquencies_2yrs')
-    X['num_delinquencies_2yrs'] = X['num_delinquencies_2yrs'].astype(str)
-
-# Preprocessing pipeline
+# Special scaling for credit_score
 credit_score_col = 'credit_score' if 'credit_score' in num_cols else None
 other_num_cols = [col for col in num_cols if col != credit_score_col]
+
+# Preprocessing pipeline
 transformers = [
-    ('num', RobustScaler(), other_num_cols),
-    ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), cat_cols)
+    ('num', StandardScaler(), other_num_cols),
+    ('cat', TargetEncoder(), cat_cols)
 ]
 if credit_score_col:
     transformers.insert(0, ('credit_score', MinMaxScaler(), [credit_score_col]))
@@ -77,30 +60,25 @@ preprocessor = ColumnTransformer(transformers=transformers)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 # Apply preprocessing
-X_train_preprocessed = preprocessor.fit_transform(X_train)
+X_train_preprocessed = preprocessor.fit_transform(X_train, y_train)
 X_test_preprocessed = preprocessor.transform(X_test)
 
-# ADASYN oversampling
-adasyn = ADASYN(random_state=42, sampling_strategy=0.5)
-X_train_resampled, y_train_resampled = adasyn.fit_resample(X_train_preprocessed, y_train)
-
-# Feature selection (top 25 features)
-selector = SelectKBest(score_func=f_classif, k=25)
-X_train_selected = selector.fit_transform(X_train_resampled, y_train_resampled)
+# Feature selection (top 30 features)
+selector = SelectKBest(score_func=f_classif, k=30)
+X_train_selected = selector.fit_transform(X_train_preprocessed, y_train)
 X_test_selected = selector.transform(X_test_preprocessed)
 
 # Get selected feature names
 feature_names = preprocessor.get_feature_names_out()
 selected_features = feature_names[selector.get_support()]
 
-# CatBoost with focal loss approximation
+# CatBoost with focal loss
 model = CatBoostClassifier(
-    iterations=1500,
-    learning_rate=0.02,
+    iterations=1000,
+    learning_rate=0.03,
     depth=6,
     l2_leaf_reg=5,
-    bagging_temperature=0.5,
-    random_strength=1,
+    auto_class_weights='Balanced',
     loss_function='Logloss',
     random_seed=42,
     eval_metric='F1',
@@ -108,12 +86,11 @@ model = CatBoostClassifier(
     early_stopping_rounds=100
 )
 
-# Grid search
+# Grid search for hyperparameter tuning
 param_grid = {
-    'depth': [5, 7],
-    'learning_rate': [0.01, 0.02],
-    'l2_leaf_reg': [3, 7],
-    'bagging_temperature': [0.5, 1.0]
+    'depth': [4, 6],
+    'learning_rate': [0.01, 0.03],
+    'l2_leaf_reg': [5, 10]
 }
 grid_search = GridSearchCV(
     estimator=model,
@@ -123,14 +100,14 @@ grid_search = GridSearchCV(
     verbose=1,
     n_jobs=-1
 )
-grid_search.fit(X_train_selected, y_train_resampled)
+grid_search.fit(X_train_selected, y_train)
 
 # Best model
 model = grid_search.best_estimator_
 print("Best Parameters:", grid_search.best_params_)
 
 # Train model
-train_pool = Pool(X_train_selected, y_train_resampled)
+train_pool = Pool(X_train_selected, y_train)
 test_pool = Pool(X_test_selected, y_test)
 model.fit(train_pool)
 
@@ -147,7 +124,7 @@ print("F1:", f1_score(y_test, y_pred))
 print("AUC:", roc_auc_score(y_test, y_prob))
 
 # Optimize threshold for F1
-thresholds = np.arange(0.5, 0.9, 0.01)
+thresholds = np.arange(0.05, 0.95, 0.05)
 best_f1 = 0
 best_threshold = 0.5
 for thresh in thresholds:
@@ -170,9 +147,3 @@ print("AUC:", roc_auc_score(y_test, y_prob))
 importances = model.get_feature_importance()
 for feat, imp in zip(selected_features, importances):
     print(f"Feature: {feat}, Importance: {imp}")
-
-# Cross-validation
-from sklearn.model_selection import cross_val_score
-from sklearn.metrics import make_scorer
-cv_scores = cross_val_score(model, X_train_selected, y_train_resampled, cv=5, scoring=make_scorer(f1_score))
-print("Cross-validated F1:", cv_scores.mean(), "+/-", cv_scores.std())
